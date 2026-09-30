@@ -906,9 +906,79 @@ function newGame(){
   resetVisuals();
   showScreen('game');
   renderNode();
+  autosave();
+}
+function continueGame(){
+  const latest = getLatestSave();
+  if(!latest){
+    toast('Нет сохранений');
+    return;
+  }
+  state = latest.data.state;
+  history = latest.data.history || [];
+  resetVisuals();
+  showScreen('game');
+  renderNode();
+
+  const label = latest.isAuto
+    ? 'автосохранение'
+    : 'слот ' + (latest.index + 1);
+  toast('Загружено: ' + label);
+}
+
+function getLatestSave(){
+  let best = null;
+
+  // автосейв
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if(raw){
+      const data = JSON.parse(raw);
+      const ts = parseRuDate(data.date);
+      best = { index: -1, data, ts, isAuto: true };
+    }
+  } catch(e){ /* ignore */ }
+
+  // ручные сохранения
+  for(let i = 0; i < SLOTS; i++){
+    const data = loadSlot(i);
+    if(!data) continue;
+    const ts = parseRuDate(data.date);
+    if(!best || ts > best.ts){
+      best = { index: i, data, ts, isAuto: false };
+    }
+  }
+  return best;
+}
+function parseRuDate(str){
+  if(!str) return 0;
+  try {
+    const m = str.match(/(\d{2})\.(\d{2})\.(\d{4}),\s*(\d{2}):(\d{2}):(\d{2})/);
+    if(!m) return 0;
+    const [, d, mo, y, h, mi, s] = m;
+    return new Date(+y, +mo - 1, +d, +h, +mi, +s).getTime();
+  } catch(e){ return 0; }
+}
+
+function refreshContinueButton(){
+  const btn = document.getElementById('btnContinue');
+  if(!btn) return;
+  const latest = getLatestSave();
+  if(latest){
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.title = latest.isAuto
+      ? 'Продолжить: автосохранение от ' + (latest.data.date || '')
+      : 'Продолжить: слот ' + (latest.index + 1) + ' — ' + (latest.data.date || '');
+  } else {
+    btn.disabled = true;
+    btn.style.opacity = '.35';
+    btn.title = 'Нет сохранений';
+  }
 }
 
 function toMenu(){
+  refreshContinueButton();
   showScreen('menu');
 }
 
@@ -1166,12 +1236,14 @@ function pick(choice){
 
   state.node = choice.to;
   renderNode();
+  autosave();
 }
 
 function goBack(){
   if(history.length === 0) return;
   state = history.pop();
   renderNode();
+  autosave();
   toast('Шаг назад');
 }
 
@@ -1194,6 +1266,7 @@ document.addEventListener('click', e => {
    СОХРАНЕНИЯ
    ========================================================= */
 const SAVE_PREFIX = 'gvp_save_';
+const AUTOSAVE_KEY = 'gvp_autosave';
 const SLOTS = 3;
 let slotMode = 'load';
 
@@ -1283,9 +1356,25 @@ function saveSlot(i){
   };
   try{
     localStorage.setItem(SAVE_PREFIX + i, JSON.stringify(payload));
+    refreshContinueButton();
   }catch(e){
     toast('Ошибка сохранения');
   }
+}
+/* Тихая запись прогресса — вызывается автоматически после каждого выбора */
+function autosave(){
+  if(!state) return;
+  if(!state.node) return;
+
+  const payload = {
+    state: deepCopy(state),
+    history: deepCopy(history).slice(-60),
+    date: new Date().toLocaleString('ru-RU')
+  };
+  try{
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
+    refreshContinueButton();
+  }catch(e){ /* тихо игнорируем */ }
 }
 
 function loadSlot(i){
@@ -1326,11 +1415,7 @@ document.addEventListener('keydown', e => {
 
 /* ---------- ИНДИКАЦИЯ СОХРАНЕНИЙ В МЕНЮ ---------- */
 (function initMenu(){
-  const hasAny = [0,1,2].some(i => loadSlot(i));
-  const btn = document.querySelectorAll('#menuScreen .btn')[1];
-  if(!hasAny && btn){
-    btn.style.opacity = '.55';
-  }
+  refreshContinueButton();
 })();
 /* =========================================================
    DEV-РЕДАКТОР РТА (нажми M на сцене с Алисой)
@@ -1456,4 +1541,353 @@ function closeDevMouth(){
   if(ov && devMouthCleanup) devMouthCleanup();
   if(ov) ov.remove();
   devMouthMode = false;
+}
+/* =========================================================
+   DEV-КАРТА СЮЖЕТА (клавиша G или кнопка 🗺 Карта)
+   ========================================================= */
+
+let storyMapMode = false;
+let storyMapCleanup = null;
+
+document.addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  if(k === 'g' || k === 'п'){
+    toggleStoryMap();
+  }
+});
+
+function toggleStoryMap(){
+  if(storyMapMode){ closeStoryMap(); return; }
+
+  storyMapMode = true;
+
+  try {
+    renderStoryMap();
+  } catch(err){
+    console.error('Ошибка карты:', err);
+    storyMapMode = false;
+    alert('Ошибка карты: ' + err.message);
+  }
+}
+
+function closeStoryMap(){
+  const ov = document.getElementById('storyMapOverlay');
+  if(ov && storyMapCleanup) storyMapCleanup();
+  if(ov) ov.remove();
+  storyMapMode = false;
+}
+
+function buildStoryMap(){
+  const maxedState = {
+    node: 'start',
+    empathy: 99,
+    systemTrust: 99,
+    risk: 99,
+    flags: {},
+    bg: null
+  };
+
+  const nodes = {};
+  const edges = [];
+
+  for(const key in story){
+    const node = story[key];
+    let list = node.choices;
+    if(typeof list === 'function'){
+      try { list = list(maxedState); } catch(err){ list = []; }
+    }
+    list = list || [];
+
+    nodes[key] = {
+      key,
+      title: node.title || '—',
+      ending: node.ending || null,
+      speaker: node.speaker || null,
+      isStart: key === 'start',
+      outgoing: []
+    };
+
+    for(const c of list){
+      if(story[c.to]){
+        edges.push({ from: key, to: c.to });
+        nodes[key].outgoing.push(c.to);
+      } else {
+        edges.push({ from: key, to: null, broken: true });
+      }
+    }
+  }
+
+  const depths = { start: 0 };
+  const queue = ['start'];
+  while(queue.length){
+    const k = queue.shift();
+    const d = depths[k];
+    for(const e of edges){
+      if(e.from === k && e.to && depths[e.to] === undefined){
+        depths[e.to] = d + 1;
+        queue.push(e.to);
+      }
+    }
+  }
+
+  let maxReachable = 0;
+  for(const k in depths){
+    if(depths[k] < 900 && depths[k] > maxReachable) maxReachable = depths[k];
+  }
+  for(const k in nodes){
+    if(depths[k] === undefined) depths[k] = maxReachable + 1;
+  }
+
+  return { nodes, edges, depths };
+}
+
+function renderStoryMap(){
+  const { nodes, edges, depths } = buildStoryMap();
+
+  const columns = {};
+  let maxDepth = 0;
+  for(const key in nodes){
+    const d = depths[key];
+    if(!columns[d]) columns[d] = [];
+    columns[d].push(key);
+    if(d > maxDepth) maxDepth = d;
+  }
+
+  const COL_W = 300;
+  const ROW_H = 120;
+  const NODE_W = 230;
+  const NODE_H = 80;
+
+  const positions = {};
+  let maxRows = 0;
+  for(const d in columns){
+    if(columns[d].length > maxRows) maxRows = columns[d].length;
+  }
+
+  for(const d in columns){
+    const col = columns[d];
+    const totalH = col.length * ROW_H;
+    const startY = (maxRows * ROW_H - totalH) / 2 + 60;
+    col.forEach((key, i) => {
+      positions[key] = {
+        x: 60 + Number(d) * COL_W,
+        y: startY + i * ROW_H
+      };
+    });
+  }
+
+  const svgW = 60 + (maxDepth + 1) * COL_W + 60;
+  const svgH = maxRows * ROW_H + 120;
+
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">`;
+  svg += `<defs>
+    <marker id="sm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5a6b80"/>
+    </marker>
+    <marker id="sm-arrow-end" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff2d95"/>
+    </marker>
+  </defs>`;
+
+  for(const e of edges){
+    if(!e.to) continue;
+    const from = positions[e.from];
+    const to = positions[e.to];
+    if(!from || !to) continue;
+
+    const x1 = from.x + NODE_W;
+    const y1 = from.y + NODE_H / 2;
+    const x2 = to.x;
+    const y2 = to.y + NODE_H / 2;
+
+    let path;
+    if(x2 <= x1 + 20){
+      const midY = Math.max(from.y, to.y) + NODE_H + 50;
+      path = `M ${x1} ${y1} C ${x1+60} ${midY}, ${x2-60} ${midY}, ${x2} ${y2}`;
+    } else {
+      const dx = (x2 - x1) / 2;
+      path = `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`;
+    }
+
+    const isEnding = nodes[e.to].ending;
+    const color = isEnding ? '#ff2d95' : '#5a6b80';
+    const marker = isEnding ? 'sm-arrow-end' : 'sm-arrow';
+
+    svg += `<path d="${path}" stroke="${color}" stroke-width="1.5" fill="none" marker-end="url(#${marker})" opacity="0.55"/>`;
+  }
+
+  for(const key in nodes){
+    const n = nodes[key];
+    const pos = positions[key];
+    if(!pos) continue;
+
+    const isDeadEnd = !n.ending && n.outgoing.length === 0;
+    const isEnding = !!n.ending;
+    const isStart = n.isStart;
+
+    let fill, stroke;
+    if(isStart){ fill = 'rgba(0,229,255,.14)'; stroke = '#00e5ff'; }
+    else if(isEnding){ fill = 'rgba(255,45,149,.14)'; stroke = '#ff2d95'; }
+    else if(isDeadEnd){ fill = 'rgba(255,51,85,.18)'; stroke = '#ff3355'; }
+    else { fill = 'rgba(90,107,128,.14)'; stroke = '#5a6b80'; }
+
+    svg += `<g class="sm-node" data-key="${key}">`;
+    svg += `<rect x="${pos.x}" y="${pos.y}" width="${NODE_W}" height="${NODE_H}" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="${(isStart || isEnding || isDeadEnd) ? 2 : 1}"/>`;
+
+    const t = n.title.length > 24 ? n.title.slice(0, 22) + '…' : n.title;
+    svg += `<text x="${pos.x + 12}" y="${pos.y + 26}" font-family="Consolas, monospace" font-size="13" fill="#e8f4ff" font-weight="700">${escapeSvgText(t)}</text>`;
+    svg += `<text x="${pos.x + 12}" y="${pos.y + 44}" font-family="Consolas, monospace" font-size="10" fill="#5a6b80">${key}</text>`;
+
+    const badges = [];
+    if(isStart) badges.push({ t: 'START', c: '#00e5ff' });
+    if(isEnding) badges.push({ t: 'КОНЕЦ', c: '#ff2d95' });
+    if(isDeadEnd) badges.push({ t: '⚠ ТУПИК', c: '#ff3355' });
+    if(n.speaker) badges.push({ t: n.speaker.toUpperCase(), c: '#ffb020' });
+
+    let bx = pos.x + 12;
+    badges.forEach(b => {
+      const w = b.t.length * 6.5 + 12;
+      svg += `<rect x="${bx}" y="${pos.y + 54}" width="${w}" height="16" rx="3" fill="${b.c}" opacity="0.18"/>`;
+      svg += `<text x="${bx + 6}" y="${pos.y + 65}" font-family="Consolas, monospace" font-size="9" fill="${b.c}">${b.t}</text>`;
+      bx += w + 4;
+    });
+
+    svg += `</g>`;
+  }
+
+  svg += `</svg>`;
+
+  const ov = document.createElement('div');
+  ov.id = 'storyMapOverlay';
+  ov.style.cssText = `
+    position:fixed; inset:0; z-index:9997;
+    background:rgba(2,4,8,.96);
+    display:flex; flex-direction:column;
+    font-family:"Consolas","Courier New",monospace;
+  `;
+
+  let endCount = 0, deadCount = 0, brokenCount = 0;
+  for(const k in nodes){
+    if(nodes[k].ending) endCount++;
+    if(!nodes[k].ending && nodes[k].outgoing.length === 0) deadCount++;
+  }
+  for(const e of edges){
+    if(!e.to) brokenCount++;
+  }
+
+  const bar = document.createElement('div');
+  bar.style.cssText = `
+    padding:14px 20px; border-bottom:1px solid rgba(0,229,255,.3);
+    display:flex; align-items:center; gap:20px; flex-wrap:wrap;
+    color:#c8d6e5; font-size:13px;
+  `;
+  bar.innerHTML = `
+    <span style="color:#00e5ff;font-weight:700;letter-spacing:.2em">КАРТА СЮЖЕТА</span>
+    <span style="color:#5a6b80">узлов: ${Object.keys(nodes).length}</span>
+    <span style="color:#ff2d95">концовок: ${endCount}</span>
+    <span style="color:${deadCount > 0 ? '#ff3355' : '#5a6b80'}">тупиков: ${deadCount}</span>
+    <span style="color:${brokenCount > 0 ? '#ff3355' : '#5a6b80'}">битых ссылок: ${brokenCount}</span>
+    <span style="margin-left:auto; color:#5a6b80">Тащи · Колесо=зум · Клик=центр · G=закрыть</span>
+  `;
+  ov.appendChild(bar);
+
+  const canvas = document.createElement('div');
+  canvas.style.cssText = 'flex:1; overflow:hidden; position:relative; cursor:grab;';
+  canvas.innerHTML = svg;
+  ov.appendChild(canvas);
+
+  document.body.appendChild(ov);
+
+  const svgEl = canvas.querySelector('svg');
+  svgEl.style.cssText = 'position:absolute; left:0; top:0; transform-origin:0 0;';
+
+  let scale = 1, tx = 0, ty = 0;
+  let dragging = false, startX, startY, startTx, startTy;
+
+  const applyTransform = () => {
+    svgEl.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  };
+
+  requestAnimationFrame(() => {
+    const cRect = canvas.getBoundingClientRect();
+    const fitScale = Math.min(cRect.width / svgW, cRect.height / svgH, 1) * 0.95;
+    scale = fitScale;
+    tx = (cRect.width - svgW * scale) / 2;
+    ty = (cRect.height - svgH * scale) / 2;
+    applyTransform();
+  });
+
+  canvas.addEventListener('mousedown', (e) => {
+    if(e.target.closest('.sm-node')) return;
+    dragging = true;
+    startX = e.clientX; startY = e.clientY;
+    startTx = tx; startTy = ty;
+    canvas.style.cursor = 'grabbing';
+  });
+
+  const onMove = (e) => {
+    if(!dragging) return;
+    tx = startTx + (e.clientX - startX);
+    ty = startTy + (e.clientY - startY);
+    applyTransform();
+  };
+  const onUp = () => {
+    dragging = false;
+    canvas.style.cursor = 'grab';
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+
+  const onWheel = (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    const newScale = Math.max(0.25, Math.min(3, scale * factor));
+
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    tx = mx - (mx - tx) * (newScale / scale);
+    ty = my - (my - ty) * (newScale / scale);
+    scale = newScale;
+    applyTransform();
+  };
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+
+  canvas.addEventListener('click', (e) => {
+    const g = e.target.closest('.sm-node');
+    if(!g) return;
+    const key = g.dataset.key;
+    const pos = positions[key];
+    if(!pos) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const targetX = rect.width  / 2 - (pos.x + NODE_W / 2) * scale;
+    const targetY = rect.height / 2 - (pos.y + NODE_H / 2) * scale;
+
+    const sTx = tx, sTy = ty;
+    const t0 = performance.now();
+    const dur = 280;
+    const step = (now) => {
+      const t = Math.min(1, (now - t0) / dur);
+      const k = 1 - Math.pow(1 - t, 3);
+      tx = sTx + (targetX - sTx) * k;
+      ty = sTy + (targetY - sTy) * k;
+      applyTransform();
+      if(t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+
+  storyMapCleanup = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    canvas.removeEventListener('wheel', onWheel);
+  };
+}
+
+function escapeSvgText(s){
+  return String(s).replace(/[&<>"']/g, m => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[m]);
 }
