@@ -19,10 +19,11 @@
   <h1 class="title">ГОЛОС<span> В </span>ПРОВОДАХ</h1>
   <p class="subtitle">научная фантастика · киберпанк · этическая драма</p>
   <div class="menu-buttons">
-    <button class="btn" onclick="newGame()">Новая игра</button>
-    <button class="btn" onclick="openSlots('load')">Загрузить сохранение</button>
-    <button class="btn magenta" onclick="exitGame()">Выход</button>
-  </div>
+  <button class="btn" id="btnContinue" onclick="continueGame()">Продолжить</button>
+  <button class="btn" onclick="newGame()">Новая игра</button>
+  <button class="btn" onclick="openSlots('load')">Загрузить сохранение</button>
+  <button class="btn magenta" onclick="exitGame()">Выход</button>
+</div>
   <div class="menu-footer">ОРАКУЛ · СИСТЕМА ГОРОДСКОГО УПРАВЛЕНИЯ · v4.12</div>
 </div>
 
@@ -41,10 +42,11 @@
     <div class="stat"><span class="lbl">Доверие</span><div class="bar trs"><i id="barTrs"></i></div><span class="num" id="numTrs">0</span></div>
     <div class="stat"><span class="lbl">Риск</span><div class="bar rsk"><i id="barRsk"></i></div><span class="num" id="numRsk">0</span></div>
     <div class="hud-right">
-      <button class="mini" id="btnBack" onclick="goBack()">← Назад</button>
-      <button class="mini" onclick="openSlots('save')">Сохранить</button>
-      <button class="mini" onclick="toMenu()">Меню</button>
-    </div>
+  <button class="mini" id="btnBack" onclick="goBack()">← Назад</button>
+  <button class="mini" onclick="openSlots('save')">Сохранить</button>
+  <button class="mini" onclick="toggleStoryMap()">🗺 Карта</button>
+  <button class="mini" onclick="toMenu()">Меню</button>
+</div>
   </div>
 
   <div class="stage" id="stage">
